@@ -7,6 +7,7 @@ environment is read here. Fakes only (host ``pbx.example.test``, ext ``1000``).
 from __future__ import annotations
 
 import dataclasses
+import ssl
 
 import pytest
 
@@ -161,6 +162,90 @@ def test_explicit_port_expires_and_user_agent() -> None:
     assert cfg.port == 5070
     assert cfg.expires == 120
     assert cfg.user_agent == "hermes-voip/test"
+
+
+# ---- optional TLS 1.2 cipher list (HERMES_SIP_TLS_CIPHERS) -----------------
+#
+# Unset keeps the forward-secret OpenSSL default. A set value is stored for the
+# client context. An unusable string, or one that drops the OpenSSL security
+# level, fails here — before any handshake — and names the env var.
+
+_TLS12_STATIC_RSA_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20:AES256-GCM-SHA384"
+
+
+def test_tls_ciphers_unset_stays_none() -> None:
+    """An omitted HERMES_SIP_TLS_CIPHERS leaves the cipher list untouched."""
+    cfg = load_gateway_config(
+        _base(HERMES_SIP_EXTENSION="1000", HERMES_SIP_PASSWORD="x")
+    )
+    assert cfg.tls_ciphers is None
+
+
+def test_tls_ciphers_blank_is_unset() -> None:
+    """A blank cipher string is the same as omitting the variable."""
+    cfg = load_gateway_config(
+        _base(
+            HERMES_SIP_EXTENSION="1000",
+            HERMES_SIP_PASSWORD="x",
+            HERMES_SIP_TLS_CIPHERS="   ",
+        )
+    )
+    assert cfg.tls_ciphers is None
+
+
+def test_tls_ciphers_set_is_stored_stripped() -> None:
+    """A usable OpenSSL cipher string is kept, with surrounding space removed."""
+    cfg = load_gateway_config(
+        _base(
+            HERMES_SIP_EXTENSION="1000",
+            HERMES_SIP_PASSWORD="x",
+            HERMES_SIP_TLS_CIPHERS=f"  {_TLS12_STATIC_RSA_CIPHERS}  ",
+        )
+    )
+    assert cfg.tls_ciphers == _TLS12_STATIC_RSA_CIPHERS
+
+
+def test_tls_ciphers_invalid_fails_naming_the_env_var() -> None:
+    """A string OpenSSL cannot apply raises ConfigError at config load."""
+    with pytest.raises(ConfigError, match="HERMES_SIP_TLS_CIPHERS") as raised:
+        load_gateway_config(
+            _base(
+                HERMES_SIP_EXTENSION="1000",
+                HERMES_SIP_PASSWORD="x",
+                HERMES_SIP_TLS_CIPHERS="NO-SUCH-CIPHER",
+            )
+        )
+    message = str(raised.value)
+    assert "cipher" in message.lower()
+    assert isinstance(raised.value.__cause__, ssl.SSLError)
+
+
+def test_tls_ciphers_security_level_drop_is_rejected() -> None:
+    """A cipher string must not lower the OpenSSL security level."""
+    with pytest.raises(ConfigError, match="security level") as raised:
+        load_gateway_config(
+            _base(
+                HERMES_SIP_EXTENSION="1000",
+                HERMES_SIP_PASSWORD="x",
+                HERMES_SIP_TLS_CIPHERS="@SECLEVEL=0:AES256-GCM-SHA384",
+            )
+        )
+    assert "HERMES_SIP_TLS_CIPHERS" in str(raised.value)
+
+
+def test_gateway_config_rejects_invalid_tls_ciphers() -> None:
+    """Direct construction validates the cipher string, not only the env parser."""
+    with pytest.raises(ConfigError, match="HERMES_SIP_TLS_CIPHERS"):
+        GatewayConfig(
+            host="pbx.example.test",
+            port=5061,
+            transport="tls",
+            expires=300,
+            user_agent="hermes-voip/0",
+            extensions=(_ext(0, "1000"),),
+            default_index=0,
+            tls_ciphers="NO-SUCH-CIPHER",
+        )
 
 
 # ---- provisioning-alias host/port keys (launch-blocker fix) ----------------

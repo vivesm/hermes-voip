@@ -28,6 +28,28 @@ pytest.importorskip("gateway.platforms.base")
 pytest.importorskip("gateway.config")
 
 from hermes_voip.adapter import _make_tls_context
+from hermes_voip.config import ConfigError
+
+# The string an out-of-tree probe used to offer TLS 1.2 static-RSA
+# AES256-GCM-SHA384 alongside the forward-secret AEAD suites. No hostname.
+_TLS12_STATIC_RSA_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20:AES256-GCM-SHA384"
+
+
+def _cipher_names(ctx: ssl.SSLContext) -> list[str]:
+    return [cipher["name"] for cipher in ctx.get_ciphers()]
+
+
+def _default_client_context() -> ssl.SSLContext:
+    """The context ``_make_tls_context`` builds when no cipher string is set."""
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
+
+
+def _assert_tls_floors(ctx: ssl.SSLContext) -> None:
+    assert ctx.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert ctx.check_hostname is True
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
 
 
 def test_make_tls_context_pins_min_version_and_verification() -> None:
@@ -45,3 +67,42 @@ def test_make_tls_context_pins_min_version_and_verification() -> None:
     assert ctx.verify_mode == ssl.CERT_REQUIRED, (
         "server-certificate verification must stay required"
     )
+
+
+def test_make_tls_context_unset_keeps_the_default_cipher_list() -> None:
+    """No cipher string means set_ciphers is not called."""
+    ctx = _make_tls_context("pbx.example.test")
+    baseline = _default_client_context()
+    assert _cipher_names(ctx) == _cipher_names(baseline)
+    assert ctx.security_level == baseline.security_level
+    _assert_tls_floors(ctx)
+
+
+def test_make_tls_context_applies_cipher_string_without_weakening_floors() -> None:
+    """A set cipher string is applied, and the TLS floors stay pinned."""
+    ctx = _make_tls_context("pbx.example.test", tls_ciphers=_TLS12_STATIC_RSA_CIPHERS)
+    expected = _default_client_context()
+    expected.set_ciphers(_TLS12_STATIC_RSA_CIPHERS)
+    names = _cipher_names(ctx)
+    assert names == _cipher_names(expected)
+    assert names != _cipher_names(_default_client_context())
+    assert "AES256-GCM-SHA384" in names
+    assert ctx.security_level == _default_client_context().security_level
+    _assert_tls_floors(ctx)
+
+
+def test_make_tls_context_rejects_unusable_cipher_string() -> None:
+    """An unusable cipher string fails clearly instead of building a context."""
+    with pytest.raises(ConfigError, match="HERMES_SIP_TLS_CIPHERS") as raised:
+        _make_tls_context("pbx.example.test", tls_ciphers="NO-SUCH-CIPHER")
+    assert isinstance(raised.value.__cause__, ssl.SSLError)
+    _assert_tls_floors(_make_tls_context("pbx.example.test"))
+
+
+def test_make_tls_context_rejects_security_level_downgrade() -> None:
+    """A cipher string cannot drop the OpenSSL security level."""
+    with pytest.raises(ConfigError, match="security level"):
+        _make_tls_context(
+            "pbx.example.test",
+            tls_ciphers="@SECLEVEL=0:AES256-GCM-SHA384",
+        )
