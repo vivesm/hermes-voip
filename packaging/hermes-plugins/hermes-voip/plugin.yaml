@@ -109,6 +109,19 @@ optional_env:
   - name: HERMES_SIP_TRANSPORT
     description: "Signalling transport: tls (default) or wss (WebRTC)."
     prompt: "SIP transport (tls/wss)"
+  - name: HERMES_SIP_TLS_CIPHERS
+    description: >-
+      Optional OpenSSL cipher string for the shared SIP-over-TLS and WSS client
+      context (SSLContext.set_ciphers). Unset (the default) keeps Python's
+      forward-secret cipher list. Set it only when a gateway rejects that
+      handshake — some VoIP.ms international POPs (amsterdam1, london1, paris1
+      on port 5061) accept only TLS 1.2 with the static-RSA suite
+      AES256-GCM-SHA384, which the default list omits. One such string is
+      ECDHE+AESGCM:ECDHE+CHACHA20:AES256-GCM-SHA384. Static RSA has no forward
+      secrecy. An unusable string, or one that lowers the OpenSSL security
+      level, fails at startup. This setting cannot lower the TLS 1.2 minimum
+      or disable certificate or hostname checks.
+    prompt: "Optional OpenSSL TLS cipher string (unset = forward-secret default)"
   - name: HERMES_VOIP_GREETING
     description: "What the agent says when it answers an inbound call."
     prompt: "Inbound greeting line"

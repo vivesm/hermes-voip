@@ -92,11 +92,13 @@ from hermes_voip.caller_modes import (
     persona_preamble_for_group,
 )
 from hermes_voip.config import (
+    ConfigError,
     GatewayConfig,
     MediaConfig,
     load_gateway_config,
     load_media_config,
     parse_keepalive_interval,
+    validate_tls_cipher_string,
 )
 from hermes_voip.dialog import Dialog, build_in_dialog_request
 from hermes_voip.digest import DigestChallenge, DigestCredentials, build_authorization
@@ -770,8 +772,27 @@ def _validate_dialable_target(target: str) -> None:
         raise ValueError(msg)
 
 
-def _make_tls_context(host: str) -> ssl.SSLContext:
-    """Build a client TLS context that verifies the server certificate."""
+def _make_tls_context(host: str, *, tls_ciphers: str | None = None) -> ssl.SSLContext:
+    """Build a client TLS context that verifies the server certificate.
+
+    ``tls_ciphers``, when set, is an OpenSSL cipher string applied with
+    ``SSLContext.set_ciphers`` (ADR-0115). ``None`` leaves the forward-secret
+    default list exactly as ``create_default_context`` built it — ``set_ciphers``
+    is not called. The TLS 1.2 floor, hostname checks, and ``CERT_REQUIRED`` are
+    re-applied after a cipher string so it cannot weaken them. The same context
+    secures both the SIP-over-TLS and WSS signalling legs (ADR-0089).
+
+    Args:
+        host: Gateway hostname. Used by the transport as SNI; not pinned here.
+        tls_ciphers: OpenSSL cipher string, or ``None`` to keep the default.
+
+    Returns:
+        The client context for the SIP-over-TLS and WSS signalling legs.
+
+    Raises:
+        ConfigError: If ``tls_ciphers`` is unusable or would lower the OpenSSL
+            security level.
+    """
     ctx = ssl.create_default_context()
     # Floor the negotiated TLS version at 1.2 (ADR-0089). create_default_context
     # leaves minimum_version at MINIMUM_SUPPORTED, so the host OpenSSL policy
@@ -779,6 +800,23 @@ def _make_tls_context(host: str) -> ssl.SSLContext:
     # and the SDES a=crypto inline key/salt — to TLS 1.0/1.1. This is
     # downgrade-hardening only; check_hostname and CERT_REQUIRED stay inherited.
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    if tls_ciphers is not None:
+        # Validate before applying so a bad string fails with ConfigError rather
+        # than a raw SSLError. set_ciphers selects TLS 1.2 suites only; re-pin
+        # the floors afterwards so the string cannot weaken them (ADR-0115).
+        validate_tls_cipher_string(tls_ciphers)
+        security_floor = ctx.security_level
+        ctx.set_ciphers(tls_ciphers)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        if ctx.security_level < security_floor:
+            msg = (
+                "HERMES_SIP_TLS_CIPHERS lowered the OpenSSL security level "
+                f"from {security_floor} to {ctx.security_level} after it was "
+                "applied. Cipher selection cannot weaken certificate checks."
+            )
+            raise ConfigError(msg)
     # The gateway host name is used for SNI/verification.
     # We do not hard-code any certificate pinning here — gateway-agnostic.
     _ = host  # consumed by the transport's server_hostname
@@ -1309,7 +1347,9 @@ class VoipAdapter(BasePlatformAdapter):
         # malformed document (bad type / invalid DTMF code / non-https webhook URL)
         # fails LOUD at startup, never at door-open time (rule 37).
         self._multi_intercom = load_multi_intercom_config(extra)
-        self._tls_ctx = _make_tls_context(gateway_cfg.host)
+        self._tls_ctx = _make_tls_context(
+            gateway_cfg.host, tls_ciphers=gateway_cfg.tls_ciphers
+        )
         # parse_keepalive_interval validates the interval is strictly-positive finite
         # at connect() time so a misconfigured value fails loud before the first
         # registration, not mid-call when the TLS session goes silent (rule 37).

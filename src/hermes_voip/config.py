@@ -18,8 +18,10 @@ Two extension schemes are supported, and they MUST NOT be mixed:
 
 Shared gateway settings: ``HERMES_SIP_HOST`` (required), ``HERMES_SIP_PORT``,
 ``HERMES_SIP_TRANSPORT`` (``tls`` | ``wss``), ``HERMES_SIP_EXPIRES``,
-``HERMES_SIP_USER_AGENT``, and ``HERMES_SIP_DEFAULT_EXTENSION`` (the inbound
-fallback registration; defaults to the lowest-index extension).
+``HERMES_SIP_USER_AGENT``, ``HERMES_SIP_TLS_CIPHERS`` (optional OpenSSL cipher
+string; unset keeps the forward-secret default), and
+``HERMES_SIP_DEFAULT_EXTENSION`` (the inbound fallback registration; defaults
+to the lowest-index extension).
 
 A :class:`GatewayConfig` carries everything env can supply; the transport-derived
 ``Contact`` and Via ``sent-by`` are not knowable until the socket is up, so
@@ -31,6 +33,7 @@ from __future__ import annotations
 
 import math
 import re
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
@@ -97,6 +100,7 @@ _TLS_PORT_KEY = "HERMES_SIP_TLS_PORT"
 _TRANSPORT_KEY = "HERMES_SIP_TRANSPORT"
 _EXPIRES_KEY = "HERMES_SIP_EXPIRES"
 _USER_AGENT_KEY = "HERMES_SIP_USER_AGENT"
+_TLS_CIPHERS_KEY = "HERMES_SIP_TLS_CIPHERS"
 _DEFAULT_EXTENSION_KEY = "HERMES_SIP_DEFAULT_EXTENSION"
 _WS_PATH_KEY = "HERMES_SIP_WS_PATH"
 # S105 noqa: this is the env-var NAME, not a password value — the SEPARATE WSS
@@ -826,6 +830,12 @@ class GatewayConfig:
             surface. ``decline`` (Phase 2) ANSWERS the call (200 OK), speaks one short
             TTS line (:attr:`MediaConfig.decline_phrase`), then BYEs — a polite decline
             that trains a spammer less than a hard 603. ``HERMES_VOIP_DENY_MODE``.
+        tls_ciphers: Optional OpenSSL cipher string (``HERMES_SIP_TLS_CIPHERS``,
+            ADR-0115) applied to the shared client TLS context with
+            ``SSLContext.set_ciphers``. ``None`` (unset) keeps the forward-secret
+            default list. A string OpenSSL cannot apply, or one that lowers the
+            OpenSSL security level, is rejected. The string cannot lower the TLS
+            1.2 minimum or disable certificate or hostname checks.
     """
 
     host: str
@@ -841,6 +851,7 @@ class GatewayConfig:
     shutdown_drain_secs: float = _DEFAULT_SHUTDOWN_DRAIN_SECS
     max_call_duration_secs: float = _DEFAULT_MAX_CALL_DURATION_SECS
     deny_mode: DenyMode = _DEFAULT_DENY_MODE
+    tls_ciphers: str | None = None
 
     def __post_init__(self) -> None:
         """Enforce the invariants the type promises, not just the parser.
@@ -897,6 +908,10 @@ class GatewayConfig:
                 f"{_DENY_MODE_KEY} must be one of {{{choices}}}, got {self.deny_mode!r}"
             )
             raise ConfigError(msg)
+        # ADR-0115: a directly constructed config is validated here, not only the
+        # env parser. None keeps the forward-secret default (no set_ciphers).
+        if self.tls_ciphers is not None:
+            validate_tls_cipher_string(self.tls_ciphers)
 
     @property
     def via_transport(self) -> ViaTransport:
@@ -1929,6 +1944,74 @@ def load_media_config(env: Mapping[str, str]) -> MediaConfig:
     )
 
 
+def _cipher_rejection_detail(exc: ssl.SSLError) -> str:
+    """Return the OpenSSL reason text from ``exc``."""
+    reason = exc.args[0] if exc.args else None
+    if isinstance(reason, str) and reason:
+        return reason
+    return str(exc)
+
+
+def validate_tls_cipher_string(ciphers: str) -> None:
+    """Reject a cipher string OpenSSL will not apply, or one that lowers security.
+
+    ``SSLContext.set_ciphers`` is the only mutation the operator string is
+    allowed to make (ADR-0115). A string that drops ``security_level``
+    (``@SECLEVEL=0``) would admit weaker certificates and algorithms while
+    ``CERT_REQUIRED`` stays set, so it is refused rather than applied. The TLS
+    1.2 minimum, hostname checks, and certificate verification are pinned by
+    the context builder and are not configurable here.
+
+    Args:
+        ciphers: OpenSSL cipher list, already stripped by the env parser.
+
+    Raises:
+        ConfigError: If ``ciphers`` is blank, selects no cipher, or lowers the
+            OpenSSL security level below ``create_default_context()``.
+    """
+    if not ciphers.strip():
+        msg = (
+            f"{_TLS_CIPHERS_KEY} must be a non-empty OpenSSL cipher string when "
+            "set; leave it unset to keep the forward-secret default"
+        )
+        raise ConfigError(msg)
+    probe = ssl.create_default_context()
+    floor = probe.security_level
+    try:
+        probe.set_ciphers(ciphers)
+    except ssl.SSLError as exc:
+        detail = _cipher_rejection_detail(exc)
+        msg = (
+            f"{_TLS_CIPHERS_KEY} is not a usable OpenSSL cipher string ({detail}). "
+            f"Got {ciphers!r}. Leave it unset to keep the forward-secret default, "
+            "or set a list OpenSSL accepts, for example "
+            "ECDHE+AESGCM:ECDHE+CHACHA20:AES256-GCM-SHA384. "
+            "This setting cannot lower the TLS 1.2 minimum, turn off certificate "
+            "or hostname checks, or drop the OpenSSL security level."
+        )
+        raise ConfigError(msg) from exc
+    if probe.security_level < floor:
+        msg = (
+            f"{_TLS_CIPHERS_KEY} would lower the OpenSSL security level "
+            f"from {floor} to {probe.security_level}. "
+            "Cipher selection cannot weaken certificate checks. "
+            "Remove @SECLEVEL (or any other security-level override) from the "
+            "cipher string. The TLS 1.2 minimum, certificate verification, and "
+            "hostname checks stay in force either way."
+        )
+        raise ConfigError(msg)
+
+
+def _parse_tls_ciphers(env: Mapping[str, str]) -> str | None:
+    """Return the stripped cipher string, or ``None`` when unset or blank.
+
+    Blank is unset on purpose: the client context must stay byte-for-behaviour
+    identical to a build that never calls ``set_ciphers``.
+    """
+    raw = _value(env, _TLS_CIPHERS_KEY)
+    return raw or None
+
+
 def load_gateway_config(env: Mapping[str, str]) -> GatewayConfig:
     """Parse the ``HERMES_SIP_*`` mapping into a validated :class:`GatewayConfig`.
 
@@ -1971,6 +2054,8 @@ def load_gateway_config(env: Mapping[str, str]) -> GatewayConfig:
         ),
         # ADR-0020 §5/§6: declined-caller disposition (reject 603 | decline+TTS+BYE).
         deny_mode=_parse_deny_mode(env),
+        # ADR-0115: None when unset/blank so the TLS context is left unchanged.
+        tls_ciphers=_parse_tls_ciphers(env),
     )
 
 

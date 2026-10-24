@@ -115,6 +115,7 @@ _KNOWN_ENV_KEYS: frozenset[str] = frozenset(
         "HERMES_SIP_PASSWORD",
         "HERMES_SIP_PORT",
         "HERMES_SIP_SHUTDOWN_DRAIN_SECS",
+        "HERMES_SIP_TLS_CIPHERS",
         "HERMES_SIP_TRANSPORT",
         "HERMES_SIP_USERNAME",
         "HERMES_SIP_USER_AGENT",

@@ -397,8 +397,28 @@ every option with fake example values).
 | `HERMES_SIP_USERNAME`   | no       | the extension  | Login username, if it differs from the extension |
 | `HERMES_SIP_PORT`       | no       | `5061` (TLS) / `443` (WSS) | Signalling port                     |
 | `HERMES_SIP_TRANSPORT`  | no       | `tls`          | `tls` or `wss` (SIP-over-Secure-WebSocket)     |
+| `HERMES_SIP_TLS_CIPHERS` | no      | unset          | OpenSSL cipher string. Unset keeps forward secrecy. |
 | `HERMES_SIP_WS_PATH`    | no       | `/ws`          | WebSocket upgrade path (only when `wss`)       |
 | `HERMES_SIP_WS_PASSWORD`| no       | the SIP password | Separate WSS digest password, if your gateway's WebRTC edge differs (only when `wss`) |
+
+**A gateway that only accepts TLS 1.2 static RSA.** Leave `HERMES_SIP_TLS_CIPHERS`
+unset unless the handshake fails. The default client context offers forward-secret
+(ECDHE/DHE) and TLS 1.3 suites only. Some VoIP.ms international points of presence —
+`amsterdam1.voip.ms`, `london1.voip.ms`, and `paris1.voip.ms` on port 5061 — accept
+only TLS 1.2 with the static-RSA suite `AES256-GCM-SHA384`, and the handshake fails
+with `SSLV3_ALERT_HANDSHAKE_FAILURE` (alert 40) until that suite is offered:
+
+```bash
+HERMES_SIP_TLS_CIPHERS=ECDHE+AESGCM:ECDHE+CHACHA20:AES256-GCM-SHA384
+```
+
+That negotiates TLS 1.2 `AES256-GCM-SHA384` and still requires TLS 1.2 or newer, a
+verified server certificate, and a matching hostname. Static RSA does not provide
+forward secrecy: a later compromise of the server private key can decrypt recorded
+handshakes. Leave the variable unset to keep the forward-secret default. SIP-over-TLS
+and WSS share this one context, so the string applies to both. An unusable string, or
+one that lowers the OpenSSL security level (for example `@SECLEVEL=0`), is rejected
+at startup.
 
 **Using WebRTC over a Secure-WebSocket?** Set `HERMES_SIP_TRANSPORT=wss` and point
 `HERMES_SIP_PORT` at your gateway's WebRTC/WSS port. If that endpoint uses a different

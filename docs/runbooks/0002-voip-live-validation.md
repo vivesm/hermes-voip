@@ -275,8 +275,12 @@ export HERMES_SIP_TRANSPORT=tls
 
 Required keys (`src/hermes_voip/config.py`): `HERMES_SIP_HOST`, `HERMES_SIP_EXTENSION`,
 `HERMES_SIP_PASSWORD` (+ optional `HERMES_SIP_USERNAME`, `HERMES_SIP_PORT`,
-`HERMES_SIP_TRANSPORT`, `HERMES_SIP_EXPIRES`, `HERMES_SIP_USER_AGENT`). For multiple
-simultaneous registrations use the indexed scheme `HERMES_SIP_EXTENSION_<n>` /
+`HERMES_SIP_TRANSPORT`, `HERMES_SIP_EXPIRES`, `HERMES_SIP_USER_AGENT`,
+`HERMES_SIP_TLS_CIPHERS`). `HERMES_SIP_TLS_CIPHERS` stays unset unless a gateway
+needs a non-default TLS 1.2 cipher list; the README records the forward-secrecy
+tradeoff. The variable cannot lower the TLS 1.2 floor or disable certificate
+checks. For multiple simultaneous registrations use the indexed scheme
+`HERMES_SIP_EXTENSION_<n>` /
 `HERMES_SIP_PASSWORD_<n>` and set `HERMES_SIP_DEFAULT_EXTENSION` for the inbound default.
 
 > Verify the env loaded **without** printing values: `printenv | grep -c '^HERMES_SIP_'`

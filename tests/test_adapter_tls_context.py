@@ -7,7 +7,9 @@ key and salt. A bare ``ssl.create_default_context()`` leaves
 ``minimum_version`` at ``TLSVersion.MINIMUM_SUPPORTED`` on Python 3.13, so the
 host OpenSSL policy could negotiate TLS 1.0/1.1 on those secret-bearing legs.
 This module pins the TLS 1.2 floor and locks the inherited verification posture
-(``check_hostname`` / ``CERT_REQUIRED``) so a future weakening is caught.
+(``check_hostname`` / ``CERT_REQUIRED``) so a future weakening is caught. An
+optional ``HERMES_SIP_TLS_CIPHERS`` string may be applied with ``set_ciphers``
+(ADR-0115); unset, the cipher list stays the forward-secret default.
 
 The adapter imports the real Hermes base at module top, so importing
 ``_make_tls_context`` needs the optional ``hermes`` extra; the module skips

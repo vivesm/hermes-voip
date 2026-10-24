@@ -13,6 +13,14 @@ pinned equal by the test suite.
 
 ### Added
 
+- **Opt-in SIP TLS cipher list** — `HERMES_SIP_TLS_CIPHERS` (unset by default)
+  applies an OpenSSL cipher string to the shared client TLS context via
+  `SSLContext.set_ciphers`. The default stays the forward-secret OpenSSL list.
+  Set it when a gateway, such as a VoIP.ms international POP (`amsterdam1` /
+  `london1` / `paris1` on port 5061), accepts only TLS 1.2 static-RSA
+  `AES256-GCM-SHA384`. Static RSA has no forward secrecy. The TLS 1.2 minimum,
+  certificate verification, and hostname checks cannot be weakened, and an
+  unusable string or a security-level downgrade fails at startup. See ADR-0115.
 - **Cumulative packet-loss counters on the call-quality logs** — the `rtcp_call_quality`
   teardown event and the `media_anomaly` (`one_way_audio` / `media_degraded`) events now
   carry `local_cumulative_lost` / `remote_cumulative_lost`, so absolute per-call
